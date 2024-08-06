@@ -1,0 +1,76 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Create AWS Glue resources including a database, crawler, job, and IAM role.
+
+Resources:
+
+  # Define the IAM Role for AWS Glue
+  GlueServiceRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: "AWSGlueServiceRole"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: "glue.amazonaws.com"
+            Action: "sts:AssumeRole"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole"
+      # You might need additional policies or permissions based on your requirements
+
+  # Define a Glue Database
+  GlueDatabase:
+    Type: "AWS::Glue::CatalogDatabase"
+    Properties:
+      DatabaseInput:
+        Name: "my-database"
+        Description: "My Glue Database"
+
+  # Define a Glue Crawler
+  GlueCrawler:
+    Type: "AWS::Glue::Crawler"
+    Properties:
+      Role: !GetAtt GlueServiceRole.Arn
+      DatabaseName: !Ref GlueDatabase
+      Targets:
+        S3Targets:
+          - Path: "s3://my-bucket/path/"
+      TablePrefix: "my-prefix_"
+      # Add additional properties like schedule or classifiers as needed
+
+  # Define a Glue Job
+  GlueJob:
+    Type: "AWS::Glue::Job"
+    Properties:
+      Role: !GetAtt GlueServiceRole.Arn
+      Command:
+        Name: "glueetl"
+        ScriptLocation: "s3://my-bucket/scripts/my-script.py"
+      GlueVersion: "3.0"
+      MaxCapacity: 2.0
+      # Add other properties as needed such as timeout, number of workers, etc.
+
+  # Optionally, you can add a Glue Trigger to run the Glue Job on a schedule
+  GlueTrigger:
+    Type: "AWS::Glue::Trigger"
+    Properties:
+      Type: "SCHEDULED"
+      Schedule: "cron(0 12 * * ? *)"  # Example schedule: daily at 12 PM UTC
+      Actions:
+        - JobName: !Ref GlueJob
+      Description: "Trigger to run Glue Job daily at 12 PM UTC"
+
+Outputs:
+  GlueDatabaseName:
+    Description: "Name of the Glue Database"
+    Value: !Ref GlueDatabase
+  GlueJobName:
+    Description: "Name of the Glue Job"
+    Value: !Ref GlueJob
+  GlueCrawlerName:
+    Description: "Name of the Glue Crawler"
+    Value: !Ref GlueCrawler
+  GlueRoleArn:
+    Description: "ARN of the IAM Role for Glue"
+    Value: !GetAtt GlueServiceRole.Arn
