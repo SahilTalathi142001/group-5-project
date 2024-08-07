@@ -1,15 +1,32 @@
 AWSTemplateFormatVersion: 2010-09-09
 Description: AWS Glue Job for ETL Process
 
+Parameters:
+  SourceBucket:
+    Type: String
+    Description: 
+  DestinationBucket:
+    Type: String
+    Description: The S3 bucket where the transformed data will be stored.
+  GlueScriptPath:
+    Type: String
+    Description: The S3 path to the Glue script (e.g., s3://my-bucket/scripts/my-glue-script.py).
+
 Resources:
   GlueJob:
     Type: AWS::Glue::Job
     Properties:
       Name: my-glue-etl-job
-      Role: arn:aws:iam::988964411479:role/LabRole
+      Role: arn:aws:iam::123456789012:role/your-existing-glue-role  # Replace with your IAM role ARN
       Command:
         Name: glueetl
-        ScriptLocation: s3://mybucket-gluescript-saurabh/my-glue-script.py
+        ScriptLocation: !Sub '${GlueScriptPath}'
         GlueVersion: '3.0'
       MaxCapacity: 2.0
       Timeout: 60 # Timeout in minutes
+      # Add any other necessary properties here
+
+Outputs:
+  GlueJobName:
+    Description: The name of the Glue job
+    Value: !Ref GlueJob
