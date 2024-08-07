@@ -1,0 +1,15 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: AWS Glue Job for ETL Process
+
+Resources:
+  GlueJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: my-glue-etl-job
+      Role: arn:aws:iam::123456789012:role/AWSGlueServiceRole
+      Command:
+        Name: glueetl
+        ScriptLocation: s3://my-bucket/scripts/my-glue-script.py
+        GlueVersion: '3.0'
+      MaxCapacity: 2.0
+      Timeout: 60 # Timeout in minutes
