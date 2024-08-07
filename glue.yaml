@@ -6,10 +6,10 @@ Resources:
     Type: AWS::Glue::Job
     Properties:
       Name: my-glue-etl-job
-      Role: arn:aws:iam::123456789012:role/AWSGlueServiceRole
+      Role: arn:aws:iam::988964411479:role/LabRole
       Command:
         Name: glueetl
-        ScriptLocation: s3://my-bucket/scripts/my-glue-script.py
+        ScriptLocation: s3://mybucket-gluescript-saurabh/my-glue-script.py
         GlueVersion: '3.0'
       MaxCapacity: 2.0
       Timeout: 60 # Timeout in minutes
