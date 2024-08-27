@@ -1,6 +1,5 @@
 import sys
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col
 
 try:
     # Initialize Spark Session
@@ -13,7 +12,7 @@ try:
         from awsglue.utils import getResolvedOptions
         from awsglue.context import GlueContext
         from awsglue.job import Job
-        
+
         # Ensure GlueContext is initialized
         if 'glueContext' not in locals():
             glueContext = GlueContext(spark.sparkContext)
@@ -29,13 +28,18 @@ try:
     target_s3_path = "s3://datalake-dbda-group5/vehicles-ingestion/"
 
     # Read the data from the source S3 bucket (CSV format)
-    df = spark.read.option("header", "true").option("sep", ",").csv(source_s3_path)
+    df = spark.read \
+        .option("header", "true") \
+        .option("sep", ",") \
+        .csv(source_s3_path)
 
     # Coalesce the DataFrame to a single partition
     df_single_file = df.coalesce(1)
 
     # Write the DataFrame as a single Parquet file to the target S3 bucket
-    df_single_file.write.mode("overwrite").parquet(target_s3_path, compression="snappy")
+    df_single_file.write \
+        .mode("overwrite") \
+        .parquet(target_s3_path, compression="snappy")
 
     # Commit the Glue job if running in AWS Glue
     if 'JOB_NAME' in sys.argv:

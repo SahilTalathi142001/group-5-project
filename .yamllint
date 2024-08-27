@@ -1,7 +1,7 @@
 extends: default
 rules:
   line-length:
-    max: 300
+    max: 350
   indentation:
     spaces: 2
   document-start:

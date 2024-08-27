@@ -1,3 +1,4 @@
+---
 name: Deploy CloudFormation and Run AWS Glue Workflow
 
 on:
@@ -10,102 +11,102 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-    - name: Set up AWS CLI
-      uses: aws-actions/configure-aws-credentials@v3
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
-        aws-region: ${{ secrets.AWS_REGION }}
+      - name: Set up AWS CLI
+        uses: aws-actions/configure-aws-credentials@v3
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ secrets.AWS_REGION }}
 
-    - name: Set environment variables for S3 buckets and IAM role ARN
-      run: |
-        echo "DATALAKE_BUCKET=${{ secrets.DATALAKE_BUCKET }}" >> $GITHUB_ENV
-        echo "DATAWAREHOUSE_BUCKET=${{ secrets.DATAWAREHOUSE_BUCKET }}" >> $GITHUB_ENV
-        echo "SCRIPT_BUCKET=${{ secrets.SCRIPT_BUCKET }}" >> $GITHUB_ENV
-        echo "GLUE_ROLE_ARN=${{ secrets.GLUE_ROLE_ARN }}" >> $GITHUB_ENV
+      - name: Set environment variables for S3 buckets and IAM role ARN
+        run: |
+          echo "DATALAKE_BUCKET=${{ secrets.DATALAKE_BUCKET }}" >> $GITHUB_ENV
+          echo "DATAWAREHOUSE_BUCKET=${{ secrets.DATAWAREHOUSE_BUCKET }}" >> $GITHUB_ENV
+          echo "SCRIPT_BUCKET=${{ secrets.SCRIPT_BUCKET }}" >> $GITHUB_ENV
+          echo "GLUE_ROLE_ARN=${{ secrets.GLUE_ROLE_ARN }}" >> $GITHUB_ENV
 
-    - name: Upload Python scripts to S3
-      run: |
-        aws s3 cp ingestion.py s3://${{ env.SCRIPT_BUCKET }}/script-ingestion/
-        aws s3 cp pre_processing.py s3://${{ env.SCRIPT_BUCKET }}/script-pre-processing/
+      - name: Upload Python scripts to S3
+        run: |
+          aws s3 cp ingestion.py s3://${{ env.SCRIPT_BUCKET }}/script-ingestion/
+          aws s3 cp pre_processing.py s3://${{ env.SCRIPT_BUCKET }}/script-pre-processing/
 
-    - name: Validate CloudFormation template
-      run: |
-        aws cloudformation validate-template --template-body file://cft-template.yaml
+      - name: Validate CloudFormation template
+        run: |
+          aws cloudformation validate-template --template-body file://cft-template.yaml
 
-    - name: Delete existing CloudFormation stack if it exists
-      run: |
-        if aws cloudformation describe-stacks --stack-name dataops-stack &>/dev/null; then
-          echo "Stack exists, deleting..."
+      - name: Delete existing CloudFormation stack if it exists
+        run: |
+          if aws cloudformation describe-stacks --stack-name dataops-stack &>/dev/null; then
+            echo "Stack exists, deleting..."
+            aws cloudformation delete-stack --stack-name dataops-stack
+            echo "Waiting for stack to be deleted..."
+            aws cloudformation wait stack-delete-complete --stack-name dataops-stack
+          else
+            echo "Stack does not exist, proceeding with deployment..."
+          fi
+
+      - name: Deploy CloudFormation stack
+        id: deploy-stack
+        run: |
+          set +e
+          aws cloudformation deploy \
+            --template-file cft-template.yaml \
+            --stack-name dataops-stack \
+            --parameter-overrides DataLakeBucket=${{ env.DATALAKE_BUCKET }} DataWarehouseBucket=${{ env.DATAWAREHOUSE_BUCKET }} GlueRoleArn=${{ env.GLUE_ROLE_ARN }} ScriptBucket=${{ env.SCRIPT_BUCKET }} \
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
+          DEPLOY_STATUS=$?
+          set -e
+          echo "DEPLOY_STATUS=$DEPLOY_STATUS" >> $GITHUB_OUTPUT
+
+      - name: Force delete stack if deployment failed
+        if: failure() || steps.deploy-stack.outputs.DEPLOY_STATUS != '0'
+        run: |
+          echo "Deployment failed or rollback occurred. Forcing stack deletion..."
           aws cloudformation delete-stack --stack-name dataops-stack
           echo "Waiting for stack to be deleted..."
           aws cloudformation wait stack-delete-complete --stack-name dataops-stack
-        else
-          echo "Stack does not exist, proceeding with deployment..."
-        fi
 
-    - name: Deploy CloudFormation stack
-      id: deploy-stack
-      run: |
-        set +e
-        aws cloudformation deploy \
-          --template-file cft-template.yaml \
-          --stack-name dataops-stack \
-          --parameter-overrides DataLakeBucket=${{ env.DATALAKE_BUCKET }} DataWarehouseBucket=${{ env.DATAWAREHOUSE_BUCKET }} GlueRoleArn=${{ env.GLUE_ROLE_ARN }} ScriptBucket=${{ env.SCRIPT_BUCKET }} \
-          --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
-          --no-fail-on-empty-changeset
-        DEPLOY_STATUS=$?
-        set -e
-        echo "DEPLOY_STATUS=$DEPLOY_STATUS" >> $GITHUB_OUTPUT
+      - name: Get Workflow Name
+        id: get-workflow-name
+        if: success() && steps.deploy-stack.outputs.DEPLOY_STATUS == '0'
+        run: |
+          WORKFLOW_NAME=$(aws cloudformation describe-stacks --stack-name dataops-stack --query "Stacks[0].Outputs[?OutputKey=='WorkflowName'].OutputValue" --output text)
+          echo "WORKFLOW_NAME=$WORKFLOW_NAME" >> $GITHUB_OUTPUT
 
-    - name: Force delete stack if deployment failed
-      if: failure() || steps.deploy-stack.outputs.DEPLOY_STATUS != '0'
-      run: |
-        echo "Deployment failed or rollback occurred. Forcing stack deletion..."
-        aws cloudformation delete-stack --stack-name dataops-stack
-        echo "Waiting for stack to be deleted..."
-        aws cloudformation wait stack-delete-complete --stack-name dataops-stack
+      - name: Start Glue Workflow
+        id: start-workflow
+        if: success() && steps.deploy-stack.outputs.DEPLOY_STATUS == '0'
+        run: |
+          WORKFLOW_RUN_ID=$(aws glue start-workflow-run --name ${{ steps.get-workflow-name.outputs.WORKFLOW_NAME }} --query 'RunId' --output text)
+          echo "WORKFLOW_RUN_ID=$WORKFLOW_RUN_ID" >> $GITHUB_OUTPUT
+          echo "Workflow run ID: $WORKFLOW_RUN_ID"
 
-    - name: Get Workflow Name
-      id: get-workflow-name
-      if: success() && steps.deploy-stack.outputs.DEPLOY_STATUS == '0'
-      run: |
-        WORKFLOW_NAME=$(aws cloudformation describe-stacks --stack-name dataops-stack --query "Stacks[0].Outputs[?OutputKey=='WorkflowName'].OutputValue" --output text)
-        echo "WORKFLOW_NAME=$WORKFLOW_NAME" >> $GITHUB_OUTPUT
-
-    - name: Start Glue Workflow
-      id: start-workflow
-      if: success() && steps.deploy-stack.outputs.DEPLOY_STATUS == '0'
-      run: |
-        WORKFLOW_RUN_ID=$(aws glue start-workflow-run --name ${{ steps.get-workflow-name.outputs.WORKFLOW_NAME }} --query 'RunId' --output text)
-        echo "WORKFLOW_RUN_ID=$WORKFLOW_RUN_ID" >> $GITHUB_OUTPUT
-        echo "Workflow run ID: $WORKFLOW_RUN_ID"
-
-    - name: Wait for Workflow Completion
-      if: success() && steps.deploy-stack.outputs.DEPLOY_STATUS == '0'
-      run: |
-        WORKFLOW_NAME="${{ steps.get-workflow-name.outputs.WORKFLOW_NAME }}"
-        WORKFLOW_RUN_ID="${{ steps.start-workflow.outputs.WORKFLOW_RUN_ID }}"
-        echo "Waiting for workflow $WORKFLOW_NAME with run ID $WORKFLOW_RUN_ID to complete..."
-        while true; do
-          WORKFLOW_STATUS=$(aws glue get-workflow-run --name "$WORKFLOW_NAME" --run-id "$WORKFLOW_RUN_ID" --include-graph --query 'Run.Status' --output text)
-          echo "Current workflow status: $WORKFLOW_STATUS"
-          
-          # Get status of individual jobs
-          aws glue get-workflow-run --name "$WORKFLOW_NAME" --run-id "$WORKFLOW_RUN_ID" --include-graph --query 'Run.Graph.Nodes[].{Name:Name,JobDetails:JobDetails.JobRuns[0].[JobName,JobRunState,ErrorMessage]}' --output json | jq -r '.[] | "Job: \(.Name), Status: \(.JobDetails[1]), Error: \(.JobDetails[2] // "None")"'
-          
-          if [ "$WORKFLOW_STATUS" = "COMPLETED" ]; then
-            echo "Workflow completed successfully"
-            break
-          elif [ "$WORKFLOW_STATUS" = "RUNNING" ] || [ "$WORKFLOW_STATUS" = "STARTING" ]; then
-            echo "Workflow is still running. Waiting..."
-            sleep 60
-          else
-            echo "Workflow failed or stopped unexpectedly. Status: $WORKFLOW_STATUS"
-            exit 1
-          fi
-        done
+      - name: Wait for Workflow Completion
+        if: success() && steps.deploy-stack.outputs.DEPLOY_STATUS == '0'
+        run: |
+          WORKFLOW_NAME="${{ steps.get-workflow-name.outputs.WORKFLOW_NAME }}"
+          WORKFLOW_RUN_ID="${{ steps.start-workflow.outputs.WORKFLOW_RUN_ID }}"
+          echo "Waiting for workflow $WORKFLOW_NAME with run ID $WORKFLOW_RUN_ID to complete..."
+          while true; do
+            WORKFLOW_STATUS=$(aws glue get-workflow-run --name "$WORKFLOW_NAME" --run-id "$WORKFLOW_RUN_ID" --include-graph --query 'Run.Status' --output text)
+            echo "Current workflow status: $WORKFLOW_STATUS"
+            
+            # Get status of individual jobs
+            aws glue get-workflow-run --name "$WORKFLOW_NAME" --run-id "$WORKFLOW_RUN_ID" --include-graph --query 'Run.Graph.Nodes[].{Name:Name,JobDetails:JobDetails.JobRuns[0].[JobName,JobRunState,ErrorMessage]}' --output json | jq -r '.[] | "Job: \(.Name), Status: \(.JobDetails[1]), Error: \(.JobDetails[2] // "None")"'
+            
+            if [ "$WORKFLOW_STATUS" = "COMPLETED" ]; then
+              echo "Workflow completed successfully"
+              break
+            elif [ "$WORKFLOW_STATUS" = "RUNNING" ] || [ "$WORKFLOW_STATUS" = "STARTING" ]; then
+              echo "Workflow is still running. Waiting..."
+              sleep 60
+            else
+              echo "Workflow failed or stopped unexpectedly. Status: $WORKFLOW_STATUS"
+              exit 1
+            fi
+          done
