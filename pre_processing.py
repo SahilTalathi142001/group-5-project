@@ -1,87 +1,128 @@
-import sys
+import pyspark.sql.functions as F
 from pyspark.sql import SparkSession
+from pyspark.sql.types import StringType, IntegerType, LongType, DoubleType, TimestampType
 
-try:
-    # AWS Glue-specific imports
-    from awsglue.utils import getResolvedOptions
-    from awsglue.context import GlueContext
-    from awsglue.job import Job
+# Initialize Spark Session
+spark = SparkSession.builder.appName("Used Cars Data Transformation").getOrCreate()
 
-    # Initialize Spark Session and Glue Context
-    spark = SparkSession.builder.getOrCreate()
-    spark.conf.set("spark.sql.parquet.int96RebaseModeInWrite", "LEGACY")
-    glueContext = GlueContext(spark)
-    
-    # If running in AWS Glue, initialize the job context
-    if 'JOB_NAME' in sys.argv:
-        args = getResolvedOptions(sys.argv, ['JOB_NAME'])
-        job = Job(glueContext)
-        job.init(args['JOB_NAME'], args)
+# Input and Output S3 paths
+s3_input_path = "s3://datalake-dbda-group5/vehicles-ingestion/"
+s3_output_path = "s3://datawarehouse-dbda-group5/vehicles-transform/"
 
-    # Load data from S3 (Parquet format)
-    s3_input_path = "s3://datalake-dbda-group5/vehicles-ingestion/"
-    spark.read.parquet(s3_input_path).createOrReplaceTempView("vehicles")
+# Load the data from the S3 input path
+used_cars = spark.read.option("header", "true").parquet(s3_input_path)
 
-    # Debugging: Print schema and show data
-    spark.sql("DESCRIBE TABLE vehicles").show()
-    spark.sql("SELECT * FROM vehicles LIMIT 5").show()
+# Print schema and sample data for debugging
+print("Schema before processing:")
+used_cars.printSchema()
+print("Sample data before processing:")
+used_cars.show(5)
 
-    # Check if the DataFrame is empty
-    count = spark.sql("SELECT COUNT(*) FROM vehicles").collect()[0][0]
-    if count == 0:
-        print("DataFrame is empty. Please check the input path and data availability.")
-    else:
-        # Drop unwanted columns
-        columns_to_drop = ["region_url", "image_url", "description"]
-        selected_columns = [col for col in spark.table("vehicles").columns if col not in columns_to_drop]
-        spark.sql(f"""
-            SELECT {", ".join(selected_columns)}
-            FROM vehicles
-        """).createOrReplaceTempView("vehicles")
+# Dropping the 'id' and 'county' columns
+used_cars = used_cars.drop('id', 'county')
 
-        print("Number of partitions before coalescing:", spark.table("vehicles").rdd.getNumPartitions())
+# Define boundaries for US lat/long
+min_latitude = 24.51
+max_latitude = 49.38
+min_longitude = -171.83
+max_longitude = -66.95
 
-        # Replace blank or null values with 'NA' for string columns and null for numeric columns
-        sql_query = """
-            SELECT 
-                COALESCE(CAST(NULLIF(id, '') AS BIGINT), 0) AS id,
-                COALESCE(CAST(NULLIF(price, '') AS BIGINT), 0) AS price,
-                COALESCE(CAST(NULLIF(year, '') AS INT), 0) AS year,
-                COALESCE(CAST(NULLIF(odometer, '') AS BIGINT), 0) AS odometer,
-                COALESCE(CAST(NULLIF(lat, '') AS DOUBLE), 0.0) AS lat,
-                COALESCE(CAST(NULLIF(long, '') AS DOUBLE), 0.0) AS long,
-                COALESCE(CAST(NULLIF(posting_date, '') AS TIMESTAMP), NULL) AS posting_date,
-                COALESCE(NULLIF(manufacturer, ''), 'NA') AS manufacturer,
-                COALESCE(NULLIF(model, ''), 'NA') AS model,
-                COALESCE(NULLIF(condition, ''), 'NA') AS condition,
-                COALESCE(NULLIF(cylinders, ''), 'NA') AS cylinders,
-                COALESCE(NULLIF(fuel, ''), 'NA') AS fuel,
-                COALESCE(NULLIF(title_status, ''), 'NA') AS title_status,
-                COALESCE(NULLIF(transmission, ''), 'NA') AS transmission,
-                COALESCE(NULLIF(Vin, ''), 'NA') AS Vin,
-                COALESCE(NULLIF(drive, ''), 'NA') AS drive,
-                COALESCE(NULLIF(size, ''), 'NA') AS size,
-                COALESCE(NULLIF(type, ''), 'NA') AS type,
-                COALESCE(NULLIF(paint_color, ''), 'NA') AS paint_color,
-                COALESCE(NULLIF(county, ''), 'NA') AS county
-            FROM vehicles
-        """
-        spark.sql(sql_query).createOrReplaceTempView("vehicles_transformed")
+# Filtering for latitude and longitude within the US
+used_cars = used_cars.filter(
+    (F.col('lat').between(min_latitude, max_latitude)) &
+    (F.col('long').between(min_longitude, max_longitude)) &
+    (F.col('long') < 0) &
+    (F.col('lat') > 0)
+)
 
-        # Coalesce to a single partition (file)
-        vehicles_df = spark.table("vehicles_transformed").coalesce(1)
-        print("Number of partitions after coalescing:", vehicles_df.rdd.getNumPartitions())
+# Function to impute missing categorical values randomly
+def random_imputer(df, column):
+    non_missing_categories = df.select(column).where(F.col(column).isNotNull()).distinct().rdd.flatMap(lambda x: x).collect()
+    if not non_missing_categories:
+        print(f"No non-missing categories found for {column}. Skipping imputation.")
+        return df
+    random_values = 'array({})'.format(','.join(["'{}'".format(val) for val in non_missing_categories]))
+    return df.withColumn(
+        column, 
+        F.when(F.col(column).isNull(), F.expr("element_at({}, cast(rand() * size({}) + 1 as int))".format(random_values, random_values))).otherwise(F.col(column))
+    )
 
-        # Write the transformed data back to S3 in Parquet format with Snappy compression
-        s3_output_path = "s3://datawarehouse-dbda-group5/vehicles-transform/"
-        vehicles_df.write.mode("overwrite").parquet(s3_output_path, compression="snappy")
+# Impute missing categorical values for paint_color and size
+used_cars = random_imputer(used_cars, 'paint_color')
+used_cars = random_imputer(used_cars, 'size')
 
-    if 'JOB_NAME' in sys.argv:
-        job.commit()
+# Fill missing 'VIN' with 'unknown'
+used_cars = used_cars.fillna({'VIN': 'unknown'})
 
-except Exception as e:
-    print(f"Error: {e}")
-    if 'JOB_NAME' in sys.argv:
-        job.commit()
-finally:
-    spark.stop()
+# Fill missing 'type', 'transmission', 'title_status', 'year', and 'fuel' with mode
+for column in ['type', 'transmission', 'title_status', 'year', 'fuel']:
+    mode_value = used_cars.groupBy(column).count().orderBy(F.col("count").desc()).first()
+    if mode_value and mode_value[0] is not None:
+        used_cars = used_cars.fillna({column: mode_value[0]})
+
+# Convert year to integer and then to string
+used_cars = used_cars.withColumn('year', F.col('year').cast(IntegerType()))
+used_cars = used_cars.withColumn('year', F.col('year').cast(StringType()))
+
+# Function to impute missing values based on most frequent values
+def random_imputer2(df, column):
+    non_missing_categories = df.groupBy(column).count().orderBy(F.col("count").desc()).limit(5).select(column).rdd.flatMap(lambda x: x).collect()
+    if not non_missing_categories:
+        print(f"No non-missing categories found for {column}. Skipping imputation.")
+        return df
+    random_values = 'array({})'.format(','.join(["'{}'".format(val) for val in non_missing_categories]))
+    return df.withColumn(
+        column, 
+        F.when(F.col(column).isNull(), F.expr("element_at({}, cast(rand() * size({}) + 1 as int))".format(random_values, random_values))).otherwise(F.col(column))
+    )
+
+# Impute missing 'manufacturer' using the top 5 manufacturers
+used_cars = random_imputer2(used_cars, 'manufacturer')
+
+# Fill model column based on manufacturer and year
+fill = F.concat(F.col('manufacturer'), F.lit(' '), F.col('year'))
+used_cars = used_cars.withColumn('model', F.when(F.col('model').isNull(), fill).otherwise(F.col('model')))
+
+# Filter out invalid odometer values and fill missing odometer with the mean
+used_cars = used_cars.filter(F.col('odometer') > 20.0)
+mean_odometer = used_cars.agg(F.avg('odometer')).first()
+if mean_odometer and mean_odometer[0] is not None:
+    used_cars = used_cars.fillna({'odometer': mean_odometer[0]})
+
+# Fill missing description with 'no description'
+used_cars = used_cars.fillna({'description': 'no description'})
+
+# Replace '4wd' with 'fwd' in drive column
+used_cars = used_cars.withColumn('drive', F.when(F.col('drive') == '4wd', 'fwd').otherwise(F.col('drive')))
+
+# Remove rows with zero price
+used_cars = used_cars.filter(F.col('price') != 0)
+
+# Coalesce to reduce small partitions before writing
+used_cars = used_cars.coalesce(1)
+
+# Change the data types of columns
+used_cars = used_cars.withColumn('price', F.col('price').cast(LongType())) \
+                     .withColumn('year', F.col('year').cast(IntegerType())) \
+                     .withColumn('odometer', F.col('odometer').cast(LongType())) \
+                     .withColumn('lat', F.col('lat').cast(DoubleType())) \
+                     .withColumn('long', F.col('long').cast(DoubleType())) \
+                     .withColumn('posting_date', F.col('posting_date').cast(TimestampType())) \
+                     .withColumn('manufacturer', F.col('manufacturer').cast(StringType())) \
+                     .withColumn('model', F.col('model').cast(StringType())) \
+                     .withColumn('condition', F.col('condition').cast(StringType())) \
+                     .withColumn('cylinders', F.col('cylinders').cast(StringType())) \
+                     .withColumn('fuel', F.col('fuel').cast(StringType())) \
+                     .withColumn('title_status', F.col('title_status').cast(StringType())) \
+                     .withColumn('transmission', F.col('transmission').cast(StringType())) \
+                     .withColumn('VIN', F.col('VIN').cast(StringType())) \
+                     .withColumn('drive', F.col('drive').cast(StringType())) \
+                     .withColumn('size', F.col('size').cast(StringType())) \
+                     .withColumn('type', F.col('type').cast(StringType())) \
+                     .withColumn('paint_color', F.col('paint_color').cast(StringType()))
+
+# Write the final DataFrame to the specified S3 output path in Parquet format
+used_cars.write.mode('overwrite').parquet(s3_output_path)
+
+# Stop the Spark session
+spark.stop()
