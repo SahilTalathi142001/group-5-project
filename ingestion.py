@@ -7,8 +7,8 @@ spark = SparkSession.builder \
     .getOrCreate()
 
 # Define the source and target S3 paths
-source_s3_path = "s3://datasource-dbda-group5/vehicles-dataset/"
-target_s3_path = "s3://datalake-dbda-group5/vehicles-ingestion/"
+source_s3_path = "s3://datasource-bucket-dataops/used-cars-dataset/"
+target_s3_path = "s3://datalake-bucket-dataops/used-cars-ingestion/"
 
 # Read the data from the source S3 bucket (CSV format)
 df = spark.read.option("header", "true").option("sep", ",").csv(source_s3_path)
