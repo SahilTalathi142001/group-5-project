@@ -6,8 +6,8 @@ from pyspark.sql.types import StringType, IntegerType, LongType, DoubleType, Tim
 spark = SparkSession.builder.appName("Used Cars Data Transformation").getOrCreate()
 
 # Input and Output S3 paths
-s3_input_path = "s3://datalake-dbda-group5/vehicles-ingestion/"
-s3_output_path = "s3://datawarehouse-dbda-group5/vehicles-transform/"
+s3_input_path = "s3://datalake-bucket-dataops/used-cars-ingestion/"
+s3_output_path = "s3://datawarehouse-bucket-dataops/used-cars-transform/"
 
 # Load the data from the S3 input path
 used_cars = spark.read.option("header", "true").parquet(s3_input_path)
